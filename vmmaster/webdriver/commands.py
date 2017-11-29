@@ -26,25 +26,17 @@ log = logging.getLogger(__name__)
 def add_sub_step(session, func):
     @wraps(func)
     def wrapper(port, request, *args, **kwargs):
-        session.add_sub_step(
-            control_line="%s %s" % (request.method, request.url),
-            body=request.data)
+        session.add_sub_step(control_line="%s %s" % (request.method, request.url), body=request.data)
 
         try:
             for status, headers, body in func(port, request, *args, **kwargs):
                 yield status, headers, body
-        except Exception as e:
-            session.add_sub_step(
-                control_line='500',
-                body=format_exc()
-            )
-            raise e
+        except:
+            session.add_sub_step(control_line='500', body=format_exc())
+            raise
         else:
             content_to_log = utils.remove_base64_screenshot(body) if body else None
-
-            session.add_sub_step(
-                control_line=str(status),
-                body=content_to_log)
+            session.add_sub_step(control_line=str(status), body=content_to_log)
 
             yield status, headers, body
 
@@ -154,14 +146,13 @@ def selenium_status(request, session):
     status, headers, body, selenium_status_code = None, None, None, None
 
     log.info("Getting selenium-server-standalone status for {}".format(session))
-
     wrapped_make_request = add_sub_step(session, session.make_request)
     for status, headers, body in wrapped_make_request(
         session.endpoint.selenium_port, network_utils.RequestHelper("GET", status_cmd)
     ):
         yield status, headers, body
-    selenium_status_code = json.loads(body).get("status", None)
 
+    selenium_status_code = json.loads(body).get("status", None)
     if selenium_status_code != 0:
         log.info("FAILED get selenium-server-standalone status for {}".format(session))
         raise CreationException("Failed to get selenium status: %s" % body)
@@ -219,6 +210,7 @@ def take_screenshot(session):
     if not session.endpoint.agent_port:
         log.debug("Take screenshot was skipped because endpoint have not AGENT PORT")
         return
+
     for status, headers, body in session.make_request(
         session.endpoint.agent_port,
         network_utils.RequestHelper(method="GET", url="/takeScreenshot")

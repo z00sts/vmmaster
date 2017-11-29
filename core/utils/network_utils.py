@@ -2,8 +2,6 @@ import time
 import logging
 import netifaces
 import requests
-from Queue import Queue
-from threading import Thread
 from core import constants, config
 from core.exceptions import RequestException, RequestTimeoutException
 from . import system_utils
@@ -115,51 +113,38 @@ def ping(ip, port):
 def make_request(
         endpoint_ip, port, request,
         timeout=getattr(config, "REQUEST_TIMEOUT", constants.REQUEST_TIMEOUT),
+        attempts=getattr(config, "MAKE_REQUEST_ATTEMPTS_AMOUNT", constants.MAKE_REQUEST_ATTEMPTS_AMOUNT)
 ):
-    """ Make http request to some port in session
-                and return the response. """
-    url = "http://%s:%s%s" % (endpoint_ip, port, request.url)
+    """
+    Make http request to some port in session and return the response.
+    """
+    url = "http://{}:{}{}".format(endpoint_ip, port, request.url)
 
     if request.headers.get("Host"):
         del request.headers['Host']
 
-    def get_response():
-        try:
-            queue.put(
-                requests.request(
+    try:
+        for attempt, sleep_time in map(lambda x: (x, constants.REQUEST_SLEEP_BASE_TIME * x), range(1, attempts + 1)):
+            yield None, None, None
+            log.info("Attempt {}. Making request {} with timeout {} sec.".format(attempt, url, timeout))
+            try:
+                response = requests.request(
                     method=request.method,
                     url=url,
                     headers=request.headers,
                     data=request.data,
                     timeout=timeout
                 )
-            )
-        except Exception as e:
-            queue.put(e)
-
-    attempts = getattr(config, "MAKE_REQUEST_ATTEMPTS_AMOUNT", constants.MAKE_REQUEST_ATTEMPTS_AMOUNT)
-    for attempt in range(1, attempts + 1):
-        queue = Queue()
-        log.info("Attempt {}. Making request {} with timeout {} sec.".format(attempt, url, timeout))
-        t = Thread(target=get_response)
-        t.daemon = True
-        t.start()
-
-        while t.isAlive():
-            yield None, None, None
-
-        response = queue.get()
-        if attempt >= attempts:
-            if isinstance(response, requests.Timeout):
-                raise RequestTimeoutException(
-                    "No response for '%s' in %s sec. Original: %s" % (url, timeout, response)
-                )
-            elif isinstance(response, Exception):
-                raise RequestException("Error for '%s'. Original: %s" % (url, response))
-        elif isinstance(response, requests.Response):
-            yield response.status_code, response.headers, response.content
-            break
-        else:
-            sleep_time = constants.REQUEST_SLEEP_BASE_TIME * attempt
-            log.info("Waiting {} seconds before next attempt to request {}".format(sleep_time, url))
-            time.sleep(sleep_time)
+                yield response.status_code, response.headers, response.content
+            except:
+                if attempt < attempts:
+                    log.info("Waiting {} seconds before next attempt to request {}".format(sleep_time, url))
+                    time.sleep(sleep_time)
+                    continue
+                raise
+    except requests.Timeout as e:
+        raise RequestTimeoutException(
+            "No response for '{}' in {} sec. Original: {}".format(url, timeout, e)
+        )
+    except Exception as e:
+        raise RequestException("Error for '{}'. Original: {}".format(url, e))
